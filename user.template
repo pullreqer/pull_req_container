@@ -1,0 +1,3 @@
+${username}_user=${username}
+${username}_gid=${gid}
+${username}_uid=${uid}

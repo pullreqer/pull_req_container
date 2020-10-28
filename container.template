@@ -1,0 +1,3 @@
+container_name=${container_name}
+${container_name}_container=${container_id}
+${container_name}_mountpoint=$(buildah mount ${${container_name}_container})

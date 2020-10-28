@@ -1,0 +1,7 @@
+#!/bin/bash
+echo "# Commands"
+echo "----------"
+echo "* create <project.git>         -- Create an empty repo."
+echo "* create_pr_repo <project.git> -- Create a repo, and enable hooks to accept pull requests"
+echo "* ssh_info                     -- return info for pull-request protocol for https://git-repo.info" 
+echo

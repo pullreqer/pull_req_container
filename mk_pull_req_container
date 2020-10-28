@@ -1,0 +1,248 @@
+#!/bin/bash -x
+set -o errexit errtrace
+
+# Doesn't work yet, microdnf doesn't support keepcache=1
+#FROM="fedora-minimal:32"
+#DNF=microdnf
+
+FROM="fedora:32"
+DNF=dnf
+podman pull registry.fedoraproject.org/${FROM}
+build_packages="make openssl-devel \
+	  dh-autoreconf curl-devel expat-devel gettext-devel openssl-devel perl-devel \
+	  zlib-devel libtalloc-devel libarchive-devel"
+run_packages="openssh openssh-server"
+export GIT_USER="$USER"
+export FROM DNF build_packages run_packages
+
+mkdir -p persistent/{vol,env,keys}
+mkdir -p persistent/vol/{home,var-git}
+mkdir -p persistent/vol/etc-ssh
+mkdir -p cache/{cargo,rustup,dnf,git}
+mkdir -p build/{artifacts,gen_code,logs}
+
+if [ ! -d cache/git/git ]; then
+pushd . && cd cache/git && git clone --depth 1 "https://github.com/git/git.git" && popd;
+fi
+
+if [ ! -d cache/git/pull_req_githook ]; then
+pushd . && cd cache/git && git clone --depth 1 "https://github.com/ratmice/pull_req_githook.git" && popd;
+fi
+
+pushd . && cd cache/git/git && git pull --all && popd
+pushd . && cd cache/git/pull_req_githook && git pull --all && popd
+
+cat <<-'EOF' >build/gen_code/git.sh
+	#!/bin/bash -x
+	set -o errexit errtrace
+
+	# Some paths...
+	artifacts="$(pwd)/build/artifacts/:/tmp:Z"
+	cargo="$(pwd)/cache/cargo/:/root/.cargo:Z"
+	rustup="$(pwd)/cache/rustup/:/root/.rustup:Z"
+	cargo_target="$(pwd)/cache/cargo_target:/root/cargo_target:Z"
+	GIT_GIT="$(pwd)/cache/git/git"
+	GIT_HOOKS="$(pwd)/cache/git/pull_req_githook/"
+	
+	make_build_env_container() {
+		dnf_cache="$(pwd)/cache/dnf:/var/cache/dnf:Z"
+		buildah config --label maintainer="$USER" ${build_env_container}
+		# Yum.
+		buildah run -v "${dnf_cache}" ${build_env_container} ${DNF} install --setopt=install_weak_deps=0 --setopt keepcache=1 -y ${build_packages}
+
+		# Cargo env vars sourcing
+		buildah run ${build_env_container} sh -c 'echo "if [ -f $HOME/.cargo/env ]; then . $HOME/.cargo/env; fi" >> /etc/bashrc'
+		buildah run ${build_env_container} sh -c 'echo "if [ -d $HOME/cargo_target ]; then CARGO_TARGET_DIR=$HOME/cargo_target; export CARGO_TARGET_DIR; fi" >> /etc/bashrc'
+
+		buildah commit ${build_env_container} git-build_env
+	}
+
+	if [ ! -f persistent/env/build_env.env ]; then
+		container_name="build_env" container_id="$(buildah from ${FROM})" envsubst <container.template >persistent/env/build_env.env
+		. persistent/env/build_env.env
+		error_handler() {
+			code=$?
+			buildah umount ${build_env_container}
+			buildah delete ${build_env_container}
+			echo "Removing build_env.env"
+			rm persistent/env/build_env.env
+			exit $code
+		}
+		trap 'error_handler' ERR SIGINT
+		make_build_env_container | tee build/logs/build_env-build.log
+	else
+		. persistent/env/build_env.env
+	fi
+
+
+	make_build_container() {
+
+		pushd .
+			cd ${build_mountpoint}
+	
+			if [ ! -d ${build_mountpoint}/git ]; then
+				git clone --depth 1 ${GIT_GIT}
+			else
+				pushd .
+				cd ${build_mountpoint}/git
+				git pull
+				popd
+			fi
+			buildah config --workingdir git ${build_container}
+			buildah run ${build_container} autoreconf
+			buildah run ${build_container} ./configure --prefix="/usr"
+			buildah run ${build_container} make -j $(lscpu | grep '^CPU(s):' | cut -d' ' -f2- | tr -d "[:blank:]")
+			buildah run -v "${artifacts}" ${build_container} make DESTDIR=/tmp/destdir install
+			buildah run -v "${artifacts}" ${build_container} cp t/helper/test-tool /tmp/destdir/usr/bin/
+
+			# Cargo env vars.
+			buildah run ${build_container} sh -c 'echo "if [ -f $HOME/.cargo/env ]; then . $HOME/.cargo/env; fi" >> /etc/bashrc'
+			buildah run ${build_container} sh -c 'echo "if [ -d $HOME/cargo_target ]; then CARGO_TARGET_DIR=$HOME/cargo_target; export CARGO_TARGET_DIR; fi" >> /etc/bashrc'
+
+			# Cargo
+			buildah run -v ${rustup} -v ${cargo} ${build_container} sh -l -c 'if [ -x "$(command -v rustup)" ]; then rustup self update; rustup update; else curl --proto "=https" --tlsv1.2 -sSf https://sh.rustup.rs | sh -s -- "-y" "--profile" "minimal" "--no-modify-path"; fi'
+			
+			if [ ! -d ${build_mountpoint}/pull_req_githook ]; then
+				git clone --depth 1 ${GIT_HOOKS}
+			else
+				pushd .
+				cd ${build_mountpoint}/pull_req_githook
+				git pull
+			fi
+			buildah run -v "${artifacts}" -v "${rustup}" -v "${cargo}" ${build_container} sh -l -c 'cargo install --path /pull_req_githook --root /tmp/destdir/usr/'
+
+
+			# Build tar file from destdir 
+			buildah config --workingdir /tmp/destdir ${build_container}
+			buildah run -v "${artifacts}" ${build_container} tar czvf /tmp/destdir.tar.gz ./
+			
+		popd
+		buildah commit ${build_container} git-build
+	}
+
+	if [ ! -f persistent/env/build.env ]; then
+		container_name="build" container_id=$(buildah from localhost/git-build_env) envsubst <container.template >persistent/env/build.env
+		. persistent/env/build.env
+		error_handler() {
+			code=$?
+			buildah umount ${build_container}
+			buildah delete ${build_container}
+			echo "Removing build.env"
+			rm persistent/env/build.env
+			exit $code
+		}
+		trap 'error_handler' ERR SIGINT
+		make_build_container | tee build/logs/build-build.log
+	else
+		. persistent/env/build.env
+	fi
+
+	make_run_container() {
+		dnf_cache="$(pwd)/cache/dnf:/var/cache/dnf:Z"
+		buildah run -v "$(pwd)/persistent/vol/etc-ssh:/etc/ssh:Z" \
+			    -v "${dnf_cache}" ${ctr30} \
+			    ${run_container} ${DNF} install \
+				--setopt=install_weak_deps=0 \
+				--setopt keepcache=1 \
+				-y ${run_packages}
+		buildah run ${run_container} systemctl enable sshd.service
+		buildah run -v "$(pwd)/persistent/vol/etc-ssh:/etc/ssh:Z" ${run_container} sh -c 'echo "PubkeyAuthentication yes" >/etc/ssh/sshd_config.d/pubkey_auth.conf'
+		tar xvf build/artifacts/destdir.tar.gz -C ${run_mountpoint}
+		buildah run -v "$(pwd)/persistent/vol/home:/home:Z" \
+		   $run_container adduser \
+		   --create-home \
+		   --user-group \
+		   --shell /usr/bin/git-shell \
+		   --system \
+		   --home-dir /home/${GIT_USER} \
+		   ${GIT_USER}
+		cp -a git-shell-commands persistent/vol/home/${GIT_USER}
+		# This is primarily debugging junk for the proc-receive hook, should probably get rid of it.
+		mkdir -p git-shell-commands persistent/vol/home/${GIT_USER}/logs
+		buildah run ${run_container} sh -c 'echo "if [ -d "$HOME/git-shell-commands" ]; then export PATH=\"$HOME/git-shell-commands:$PATH\"; fi" >> /etc/bashrc'
+		username="${GIT_USER}" uid=$(buildah run $run_container id -u ${GIT_USER}) gid=$(buildah run $run_container id -g $GIT_USER) envsubst <user.template >persistent/env/git_user.env
+		. persistent/env/git_user.env
+		mkdir -p persistent/vol/home/$GIT_USER/.ssh
+		if [ ! -f "persistent/keys/user_key.pub" ]; then 
+		   ssh-keygen -t ecdsa -f persistent/keys/user_key -q -N "" 
+		fi
+		cp persistent/keys/user_key.pub persistent/vol/home/$GIT_USER/.ssh/authorized_keys
+		
+cat <<-EOF2 >build/gen_code/git-permissions.sh
+		#!/bin/bash -x
+		chown $GIT_USER:$GIT_USER /home/$GIT_USER -R
+		chmod 755 /home/$GIT_USER/.ssh
+		chmod 655 /home/$GIT_USER/.ssh/authorized_keys
+EOF2
+
+cat <<-EOF2 >build/gen_code/git-permissions.service
+		[Unit]
+		Before=console-login-helper-messages-issuegen.service
+		After=home.mount
+		ConditionPathExists=!/var/lib/git-permissions
+
+		[Service]
+		Type=oneshot
+		ExecStart=/usr/local/bin/git-permissions.sh
+		ExecStartPost=/usr/bin/touch /var/lib/fixed-permissions
+		RemainAfterExit=yes
+
+		[Install]
+		WantedBy=sshd.service
+EOF2
+
+		cp build/gen_code/git-permissions.sh ${run_mountpoint}/usr/local/bin
+		chmod +x ${run_mountpoint}/usr/local/bin/git-permissions.sh
+		cp build/gen_code/git-permissions.service ${run_mountpoint}/etc/systemd/system
+		buildah run $run_container systemctl enable git-permissions.service
+	}
+
+	if [ ! -f persistent/env/run.env ]; then
+		container_name="run" container_id=$(buildah from ${FROM}) envsubst <container.template >persistent/env/run.env
+		. persistent/env/run.env
+		error_handler() {
+			code=$?
+			buildah umount ${run_container}
+			buildah delete ${run_container}
+			echo "Removing run.env"
+			rm persistent/env/run.env
+			exit $code
+		}
+		trap 'error_handler' ERR SIGINT
+		make_run_container | tee build/logs/run-build.log
+	else
+		. persistent/env/run.env
+	fi
+
+	setup() {
+		buildah config --entrypoint /usr/sbin/init ${run_container}
+		buildah commit ${run_container} git-run
+	}
+	error_handler() {
+			code=$?
+			exit $code
+	}
+	trap 'error_handler' ERR
+	setup
+EOF
+
+chmod +x build/gen_code/git.sh
+buildah unshare build/gen_code/git.sh
+. persistent/env/git_user.env
+cat <<'EOF' >build/gen_code/run_git.sh | envsubst '${git_uid} ${git_gid}'
+#!/bin/bash -x
+	set -o errexit errtrace
+	chown ${git_uid}:${git_gid} $(pwd)/persistent/vol/{home,var-git}
+	chmod 700 persistent/vol/home/${GIT_USER}/
+	chmod 755 persistent/vol/home/${GIT_USER}/.ssh
+	chmod 655 persistent/vol/home/${GIT_USER}/.ssh/authorized_keys
+	chown 0:0 $(pwd)/persistent/vol/etc-ssh/ -R
+	chmod 700 $(pwd)/persistent/vol/etc-ssh/
+	chmod 600 $(pwd)/persistent/vol/etc-ssh/*
+	podman run -v "$(pwd)/persistent/vol/home:/home:Z" \
+		   -v "$(pwd)/persistent/vol/etc-ssh:/etc/ssh:Z" \
+			-p 2222:22 -t --systemd=always localhost/git-run
+	chown 0:0 $(pwd)/persistent/vol/ -R
+EOF
+chmod +x build/gen_code/run_git.sh
+podman unshare build/gen_code/run_git.sh

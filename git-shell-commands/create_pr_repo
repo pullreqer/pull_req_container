@@ -1,0 +1,31 @@
+#!/bin/sh
+# http://planzero.org/blog/2012/10/24/hosting_an_admin-friendly_git_server_with_git-shell
+
+# If no project name is given
+if [ $# -eq 0 ]
+then
+
+	# Display usage and stop
+	echo "Usage: create <project.git>"
+	exit 1
+
+fi
+
+# Set the project name, adding .git if necessary
+project=$(echo "$*" | sed 's/\.git$\|$/.git/i')
+if [ ! -d "$project" ]; then
+	# Create and initialise the project
+	mkdir "$project" && \
+	cd "$project" && \
+	git --bare init && \
+	git config --add receive.procReceiveRefs refs/for/ && \
+	git config --add receive.procReceiveRefs refs/for-review/ && \
+	git config --add receive.procReceiveRefs refs/merge-requests/ && \
+	git config --add receive.procReceiveRefs refs/drafts/ && \
+	git config --add receive.procReceiveRefs refs/private/ && \
+	git config receive.advertisePushOptions true && \
+	cd "hooks" && \
+	ln -s /usr/bin/pull_req proc-receive;
+else
+	echo "$project already exists";
+fi
