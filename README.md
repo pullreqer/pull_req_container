@@ -12,10 +12,17 @@ The containers a built and run rootless, and there is an excessive amount of cac
 you will also need https://git-repo.info
 
 ### Usage:
-`./mk_pull_req_container`
+Build container with`./mk_pull_req_container`, run it using `build/gen_code/git_start.sh`
+A systemd unit is in `build/gen_code/pullreqer.service` you can enable it with
+```
+mkdir -p ~/.config/systemd/user
+cp build/gen_code/pullreqer.service ~/.config/systemd/user
+systemctl --user enable pullreqer.service --now
+```
 
 Add the keys generated in `persistent/keys/user_key` to `~/.ssh/.config`,
-via something such as:
+and the public key is known to the container.
+
 ```
 Host localhost
     HostName localhost 
