@@ -26,10 +26,10 @@ pushd . && cd cache/git && git clone --depth 1 "https://github.com/git/git.git" 
 fi
 
 if [ ! -d cache/git/pull_req_githook ]; then
-pushd . && cd cache/git && git clone --depth 1 "https://github.com/ratmice/pull_req_githook.git" && popd;
+pushd . && cd cache/git && git clone --depth 1 "https://github.com/pullreqer/pull_req_githook.git" && popd;
 fi
 
-pushd . && cd cache/git/git && git pull --all && popd
+pushd . && cd cache/git/git && git pull --depth 1 --all && popd
 pushd . && cd cache/git/pull_req_githook && git pull --all && popd
 
 cat <<-'EOF' >build/gen_code/git.sh
@@ -47,7 +47,6 @@ cat <<-'EOF' >build/gen_code/git.sh
 	make_build_env_container() {
 		dnf_cache="$(pwd)/cache/dnf:/var/cache/dnf:Z"
 		buildah config --label maintainer="$USER" ${build_env_container}
-		# Yum.
 		buildah run -v "${dnf_cache}" ${build_env_container} ${DNF} install --setopt=install_weak_deps=0 --setopt keepcache=1 -y ${build_packages}
 
 		# Cargo env vars sourcing
@@ -85,7 +84,7 @@ cat <<-'EOF' >build/gen_code/git.sh
 			else
 				pushd .
 				cd ${build_mountpoint}/git
-				git pull
+				git pull --depth 1
 				popd
 			fi
 			buildah config --workingdir git ${build_container}
@@ -162,6 +161,14 @@ cat <<-'EOF' >build/gen_code/git.sh
 		buildah run ${run_container} sh -c 'echo "if [ -d "$HOME/git-shell-commands" ]; then export PATH=\"$HOME/git-shell-commands:$PATH\"; fi" >> /etc/bashrc'
 		username="${GIT_USER}" uid=$(buildah run $run_container id -u ${GIT_USER}) gid=$(buildah run $run_container id -g $GIT_USER) envsubst <user.template >persistent/env/git_user.env
 		. persistent/env/git_user.env
+
+		# It probably deserves mention:
+		# 	1. keygen on local machine, outside of a bind-mount volume
+		# 	2. copy *public* key into a bind-mounted volume.
+		# This is to ensure that the private key can't leak, only the public key.
+		# and the public key only leaks if something copies the public key outside of the bind-mount volume
+		# into the image layer itself.
+		#
 		mkdir -p persistent/vol/home/$GIT_USER/.ssh
 		if [ ! -f "persistent/keys/user_key.pub" ]; then 
 		   ssh-keygen -t ecdsa -f persistent/keys/user_key -q -N "" 
@@ -229,20 +236,37 @@ EOF
 chmod +x build/gen_code/git.sh
 buildah unshare build/gen_code/git.sh
 . persistent/env/git_user.env
-cat <<'EOF' >build/gen_code/run_git.sh | envsubst '${git_uid} ${git_gid}'
+cat <<-'EOF' | envsubst '${git_uid} ${git_gid} ${GIT_USER} ${PWD}' >build/gen_code/git_start.sh
 #!/bin/bash -x
 	set -o errexit errtrace
-	chown ${git_uid}:${git_gid} $(pwd)/persistent/vol/{home,var-git}
-	chmod 700 persistent/vol/home/${GIT_USER}/
-	chmod 755 persistent/vol/home/${GIT_USER}/.ssh
-	chmod 655 persistent/vol/home/${GIT_USER}/.ssh/authorized_keys
-	chown 0:0 $(pwd)/persistent/vol/etc-ssh/ -R
-	chmod 700 $(pwd)/persistent/vol/etc-ssh/
-	chmod 600 $(pwd)/persistent/vol/etc-ssh/*
-	podman run -v "$(pwd)/persistent/vol/home:/home:Z" \
-		   -v "$(pwd)/persistent/vol/etc-ssh:/etc/ssh:Z" \
+	chown ${git_uid}:${git_gid} ${PWD}/persistent/vol/{home,var-git}
+	chmod 700 ${PWD}/persistent/vol/home/${GIT_USER}/
+	chmod 755 ${PWD}/persistent/vol/home/${GIT_USER}/.ssh
+	chmod 655 ${PWD}/persistent/vol/home/${GIT_USER}/.ssh/authorized_keys
+	chown 0:0 ${PWD}/persistent/vol/etc-ssh/ -R
+	chmod 700 ${PWD}/persistent/vol/etc-ssh/
+	chmod 600 ${PWD}/persistent/vol/etc-ssh/*
+	podman run --rm --name pullreqer -v "${PWD}/persistent/vol/home:/home:Z" \
+		   -v "${PWD}/persistent/vol/etc-ssh:/etc/ssh:Z" \
 			-p 2222:22 -t --systemd=always localhost/git-run
-	chown 0:0 $(pwd)/persistent/vol/ -R
 EOF
-chmod +x build/gen_code/run_git.sh
-podman unshare build/gen_code/run_git.sh
+cat <<-'EOF' | envsubst '${git_uid} ${git_gid} ${PWD}' >build/gen_code/git_stop.sh
+#!/bin/bash -x
+	set -o errexit errtrace
+	chown 0:0 ${PWD}/persistent/vol/ -R
+	podman stop pullreqer
+EOF
+
+cat <<'EOF' | envsubst '${PWD}' >build/gen_code/pullreqer.service
+[Unit]
+Description=Pull Reqer git server container
+[Service]
+Restart=always
+ExecStart=/usr/bin/podman unshare ${PWD}/build/gen_code/git_start.sh
+ExecStop=/usr/bin/podman unshare ${PWD}/build/gen_code/git_stop.sh
+
+[Install]
+WantedBy=multi-user.target
+EOF
+
+chmod +x build/gen_code/git_{start,stop}.sh

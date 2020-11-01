@@ -15,7 +15,7 @@ fi
 project=$(echo "$*" | sed 's/\.git$\|$/.git/i')
 if [ ! -d "$project" ]; then
 	# Create and initialise the project
-	mkdir "$project" && \
+	mkdir -p "$project" && \
 	cd "$project" && \
 	git --bare init && \
 	git config --add receive.procReceiveRefs refs/for/ && \
