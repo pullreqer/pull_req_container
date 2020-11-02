@@ -1,6 +1,5 @@
 #!/bin/bash -x
 set -o errexit errtrace
-
 # Doesn't work yet, microdnf doesn't support keepcache=1
 #FROM="fedora-minimal:32"
 #DNF=microdnf
@@ -12,14 +11,16 @@ build_packages="make openssl-devel \
 	  dh-autoreconf curl-devel expat-devel gettext-devel openssl-devel perl-devel \
 	  zlib-devel libtalloc-devel libarchive-devel"
 run_packages="openssh openssh-server"
-export GIT_USER="$USER"
-export FROM DNF build_packages run_packages
+script_path="$(dirname $(realpath $0))"
+run_path="$(pwd)"
+export GIT_USER="git"
+export FROM DNF build_packages run_packages script_path run_path
 
-mkdir -p persistent/{vol,env,keys}
-mkdir -p persistent/vol/{home,var-git}
-mkdir -p persistent/vol/etc-ssh
-mkdir -p cache/{cargo,rustup,dnf,git}
-mkdir -p build/{artifacts,gen_code,logs}
+mkdir -p ${run_path}/persistent/{vol,env,keys}
+mkdir -p ${run_path}/persistent/vol/{home,var-git}
+mkdir -p ${run_path}/persistent/vol/etc-ssh
+mkdir -p ${run_path}/cache/{cargo,rustup,dnf,git}
+mkdir -p ${run_path}/build/{artifacts,gen_code,logs}
 
 if [ ! -d cache/git/git ]; then
 pushd . && cd cache/git && git clone --depth 1 "https://github.com/git/git.git" && popd;
@@ -32,20 +33,21 @@ fi
 pushd . && cd cache/git/git && git pull --depth 1 --all && popd
 pushd . && cd cache/git/pull_req_githook && git pull --all && popd
 
-cat <<-'EOF' >build/gen_code/git.sh
+cat <<-'EOF' | envsubst '${script_path} ${run_path}' >${run_path}/build/gen_code/git.sh
 	#!/bin/bash -x
 	set -o errexit errtrace
 
 	# Some paths...
-	artifacts="$(pwd)/build/artifacts/:/tmp:Z"
-	cargo="$(pwd)/cache/cargo/:/root/.cargo:Z"
-	rustup="$(pwd)/cache/rustup/:/root/.rustup:Z"
-	cargo_target="$(pwd)/cache/cargo_target:/root/cargo_target:Z"
-	GIT_GIT="$(pwd)/cache/git/git"
-	GIT_HOOKS="$(pwd)/cache/git/pull_req_githook/"
+	run_path="${run_path}"
+	artifacts="${run_path}/build/artifacts/:/tmp:Z"
+	cargo="${run_path}/cache/cargo/:/root/.cargo:Z"
+	rustup="${run_path}/cache/rustup/:/root/.rustup:Z"
+	cargo_target="${run_path}/cache/cargo_target:/root/cargo_target:Z"
+	GIT_GIT="${run_path}/cache/git/git"
+	GIT_HOOKS="${run_path}/cache/git/pull_req_githook/"
 	
 	make_build_env_container() {
-		dnf_cache="$(pwd)/cache/dnf:/var/cache/dnf:Z"
+		dnf_cache="${run_path}/cache/dnf:/var/cache/dnf:Z"
 		buildah config --label maintainer="$USER" ${build_env_container}
 		buildah run -v "${dnf_cache}" ${build_env_container} ${DNF} install --setopt=install_weak_deps=0 --setopt keepcache=1 -y ${build_packages}
 
@@ -56,21 +58,21 @@ cat <<-'EOF' >build/gen_code/git.sh
 		buildah commit ${build_env_container} git-build_env
 	}
 
-	if [ ! -f persistent/env/build_env.env ]; then
-		container_name="build_env" container_id="$(buildah from ${FROM})" envsubst <container.template >persistent/env/build_env.env
-		. persistent/env/build_env.env
+	if [ ! -f ${run_path}/persistent/env/build_env.env ]; then
+		container_name="build_env" container_id="$(buildah from ${FROM})" envsubst <${script_path}/container.template >${run_path}/persistent/env/build_env.env
+		. ${run_path}/persistent/env/build_env.env
 		error_handler() {
 			code=$?
 			buildah umount ${build_env_container}
 			buildah delete ${build_env_container}
 			echo "Removing build_env.env"
-			rm persistent/env/build_env.env
+			rm ${run_path}/persistent/env/build_env.env
 			exit $code
 		}
 		trap 'error_handler' ERR SIGINT
-		make_build_env_container | tee build/logs/build_env-build.log
+		make_build_env_container | tee ${run_path}/build/logs/build_env-build.log
 	else
-		. persistent/env/build_env.env
+		. ${run_path}/persistent/env/build_env.env
 	fi
 
 
@@ -119,35 +121,35 @@ cat <<-'EOF' >build/gen_code/git.sh
 		buildah commit ${build_container} git-build
 	}
 
-	if [ ! -f persistent/env/build.env ]; then
-		container_name="build" container_id=$(buildah from localhost/git-build_env) envsubst <container.template >persistent/env/build.env
-		. persistent/env/build.env
+	if [ ! -f ${run_path}/persistent/env/build.env ]; then
+		container_name="build" container_id=$(buildah from localhost/git-build_env) envsubst <${script_path}/container.template >${run_path}/persistent/env/build.env
+		. ${run_path}/persistent/env/build.env
 		error_handler() {
 			code=$?
 			buildah umount ${build_container}
 			buildah delete ${build_container}
 			echo "Removing build.env"
-			rm persistent/env/build.env
+			rm ${run_path}/persistent/env/build.env
 			exit $code
 		}
 		trap 'error_handler' ERR SIGINT
-		make_build_container | tee build/logs/build-build.log
+		make_build_container | tee ${run_path}/build/logs/build-build.log
 	else
-		. persistent/env/build.env
+		. ${run_path}/persistent/env/build.env
 	fi
 
 	make_run_container() {
-		dnf_cache="$(pwd)/cache/dnf:/var/cache/dnf:Z"
-		buildah run -v "$(pwd)/persistent/vol/etc-ssh:/etc/ssh:Z" \
+		dnf_cache="${run_path}/cache/dnf:/var/cache/dnf:Z"
+		buildah run -v "${run_path}/persistent/vol/etc-ssh:/etc/ssh:Z" \
 			    -v "${dnf_cache}" ${ctr30} \
 			    ${run_container} ${DNF} install \
 				--setopt=install_weak_deps=0 \
 				--setopt keepcache=1 \
 				-y ${run_packages}
 		buildah run ${run_container} systemctl enable sshd.service
-		buildah run -v "$(pwd)/persistent/vol/etc-ssh:/etc/ssh:Z" ${run_container} sh -c 'echo "PubkeyAuthentication yes" >/etc/ssh/sshd_config.d/pubkey_auth.conf'
+		buildah run -v "${run_path}/persistent/vol/etc-ssh:/etc/ssh:Z" ${run_container} sh -c 'echo "PubkeyAuthentication yes" >/etc/ssh/sshd_config.d/pubkey_auth.conf'
 		tar xvf build/artifacts/destdir.tar.gz -C ${run_mountpoint}
-		buildah run -v "$(pwd)/persistent/vol/home:/home:Z" \
+		buildah run -v "${run_path}/persistent/vol/home:/home:Z" \
 		   $run_container adduser \
 		   --create-home \
 		   --user-group \
@@ -155,12 +157,12 @@ cat <<-'EOF' >build/gen_code/git.sh
 		   --system \
 		   --home-dir /home/${GIT_USER} \
 		   ${GIT_USER}
-		cp -a git-shell-commands persistent/vol/home/${GIT_USER}
+		cp -a ${script_path}/git-shell-commands ${run_path}/persistent/vol/home/${GIT_USER}
 		# This is primarily debugging junk for the proc-receive hook, should probably get rid of it.
-		mkdir -p git-shell-commands persistent/vol/home/${GIT_USER}/logs
+		mkdir -p git-shell-commands ${run_path}/persistent/vol/home/${GIT_USER}/logs
 		buildah run ${run_container} sh -c 'echo "if [ -d "$HOME/git-shell-commands" ]; then export PATH=\"$HOME/git-shell-commands:$PATH\"; fi" >> /etc/bashrc'
-		username="${GIT_USER}" uid=$(buildah run $run_container id -u ${GIT_USER}) gid=$(buildah run $run_container id -g $GIT_USER) envsubst <user.template >persistent/env/git_user.env
-		. persistent/env/git_user.env
+		username="${GIT_USER}" uid=$(buildah run $run_container id -u ${GIT_USER}) gid=$(buildah run $run_container id -g $GIT_USER) envsubst <${script_path}/user.template >${run_path}/persistent/env/git_user.env
+		. ${run_path}/persistent/env/git_user.env
 
 		# It probably deserves mention:
 		# 	1. keygen on local machine, outside of a bind-mount volume
@@ -169,11 +171,11 @@ cat <<-'EOF' >build/gen_code/git.sh
 		# and the public key only leaks if something copies the public key outside of the bind-mount volume
 		# into the image layer itself.
 		#
-		mkdir -p persistent/vol/home/$GIT_USER/.ssh
-		if [ ! -f "persistent/keys/user_key.pub" ]; then 
-		   ssh-keygen -t ecdsa -f persistent/keys/user_key -q -N "" 
+		mkdir -p ${run_path}/persistent/vol/home/$GIT_USER/.ssh
+		if [ ! -f "${run_path}/persistent/keys/user_key.pub" ]; then 
+		   ssh-keygen -t ecdsa -f ${run_path}/persistent/keys/user_key -q -N "" 
 		fi
-		cp persistent/keys/user_key.pub persistent/vol/home/$GIT_USER/.ssh/authorized_keys
+		cp ${run_path}/persistent/keys/user_key.pub ${run_path}/persistent/vol/home/$GIT_USER/.ssh/authorized_keys
 		
 cat <<-EOF2 >build/gen_code/git-permissions.sh
 		#!/bin/bash -x
@@ -198,27 +200,27 @@ cat <<-EOF2 >build/gen_code/git-permissions.service
 		WantedBy=sshd.service
 EOF2
 
-		cp build/gen_code/git-permissions.sh ${run_mountpoint}/usr/local/bin
+		cp ${run_path}/build/gen_code/git-permissions.sh ${run_mountpoint}/usr/local/bin
 		chmod +x ${run_mountpoint}/usr/local/bin/git-permissions.sh
-		cp build/gen_code/git-permissions.service ${run_mountpoint}/etc/systemd/system
+		cp ${run_path}/build/gen_code/git-permissions.service ${run_mountpoint}/etc/systemd/system
 		buildah run $run_container systemctl enable git-permissions.service
 	}
 
-	if [ ! -f persistent/env/run.env ]; then
-		container_name="run" container_id=$(buildah from ${FROM}) envsubst <container.template >persistent/env/run.env
-		. persistent/env/run.env
+	if [ ! -f ${run_path}/persistent/env/run.env ]; then
+		container_name="run" container_id=$(buildah from ${FROM}) envsubst <${script_path}/container.template >${run_path}/persistent/env/run.env
+		. ${run_path}/persistent/env/run.env
 		error_handler() {
 			code=$?
 			buildah umount ${run_container}
 			buildah delete ${run_container}
 			echo "Removing run.env"
-			rm persistent/env/run.env
+			rm ${run_path}/persistent/env/run.env
 			exit $code
 		}
 		trap 'error_handler' ERR SIGINT
-		make_run_container | tee build/logs/run-build.log
+		make_run_container | tee ${run_path}/build/logs/run-build.log
 	else
-		. persistent/env/run.env
+		. ${run_path}/persistent/env/run.env
 	fi
 
 	setup() {
@@ -235,26 +237,32 @@ EOF
 
 chmod +x build/gen_code/git.sh
 buildah unshare build/gen_code/git.sh
+# It's important that this is run_path (not some other directory).
+# we're running under buildah unshare
 . persistent/env/git_user.env
-cat <<-'EOF' | envsubst '${git_uid} ${git_gid} ${GIT_USER} ${PWD}' >build/gen_code/git_start.sh
+cat <<-'EOF' | envsubst '${git_uid} ${git_gid} ${GIT_USER} ${run_path}' >build/gen_code/git_start.sh
 #!/bin/bash -x
+cat <<-'EOF2' | podman unshare
 	set -o errexit errtrace
-	chown ${git_uid}:${git_gid} ${PWD}/persistent/vol/{home,var-git}
-	chmod 700 ${PWD}/persistent/vol/home/${GIT_USER}/
-	chmod 755 ${PWD}/persistent/vol/home/${GIT_USER}/.ssh
-	chmod 655 ${PWD}/persistent/vol/home/${GIT_USER}/.ssh/authorized_keys
-	chown 0:0 ${PWD}/persistent/vol/etc-ssh/ -R
-	chmod 700 ${PWD}/persistent/vol/etc-ssh/
-	chmod 600 ${PWD}/persistent/vol/etc-ssh/*
-	podman run --rm --name pullreqer -v "${PWD}/persistent/vol/home:/home:Z" \
-		   -v "${PWD}/persistent/vol/etc-ssh:/etc/ssh:Z" \
+	chown ${git_uid}:${git_gid} ${run_path}/persistent/vol/{home,var-git}
+	chmod 700 ${run_path}/persistent/vol/home/${GIT_USER}/
+	chmod 755 ${run_path}/persistent/vol/home/${GIT_USER}/.ssh
+	chmod 655 ${run_path}/persistent/vol/home/${GIT_USER}/.ssh/authorized_keys
+	chown 0:0 ${run_path}/persistent/vol/etc-ssh/ -R
+	chmod 700 ${run_path}/persistent/vol/etc-ssh/
+	chmod 600 ${run_path}/persistent/vol/etc-ssh/*
+	podman run --rm --name pullreqer -v "${run_path}/persistent/vol/home:/home:Z" \
+		   -v "${run_path}/persistent/vol/etc-ssh:/etc/ssh:Z" \
 			-p 2222:22 -t --systemd=always localhost/git-run
+EOF2
 EOF
-cat <<-'EOF' | envsubst '${git_uid} ${git_gid} ${PWD}' >build/gen_code/git_stop.sh
+cat <<-'EOF' | envsubst '${git_uid} ${git_gid} ${run_path}' >build/gen_code/git_stop.sh
 #!/bin/bash -x
+cat <<-'EOF2' | podman unshare
 	set -o errexit errtrace
-	chown 0:0 ${PWD}/persistent/vol/ -R
+	chown 0:0 ${run_path}/persistent/vol/ -R
 	podman stop pullreqer
+EOF2
 EOF
 
 cat <<'EOF' | envsubst '${PWD}' >build/gen_code/pullreqer.service
@@ -262,8 +270,8 @@ cat <<'EOF' | envsubst '${PWD}' >build/gen_code/pullreqer.service
 Description=Pull Reqer git server container
 [Service]
 Restart=always
-ExecStart=/usr/bin/podman unshare ${PWD}/build/gen_code/git_start.sh
-ExecStop=/usr/bin/podman unshare ${PWD}/build/gen_code/git_stop.sh
+ExecStart=${PWD}/build/gen_code/git_start.sh
+ExecStop=${PWD}/build/gen_code/git_stop.sh
 
 [Install]
 WantedBy=multi-user.target
