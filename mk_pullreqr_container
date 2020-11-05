@@ -23,15 +23,19 @@ mkdir -p ${run_path}/cache/{cargo,rustup,dnf,git}
 mkdir -p ${run_path}/build/{artifacts,gen_code,logs}
 
 if [ ! -d cache/git/git ]; then
-pushd . && cd cache/git && git clone --depth 1 "https://github.com/git/git.git" && popd;
+  pushd . && cd cache/git && git clone --depth 1 "https://github.com/git/git.git" && popd;
 fi
 
-if [ ! -d cache/git/pull_req_githook ]; then
-pushd . && cd cache/git && git clone --depth 1 "https://github.com/pullreqer/pull_req_githook.git" && popd;
+if [ ! -d cache/git/pullreqr_githook ]; then
+  pushd . && cd cache/git && git clone --depth 1 "https://github.com/pullreqr/pullreqr_githook.git" && popd;
+fi
+
+if [ ! -d cache/git/pullreqr_ssh_info ]; then
+  pushd . && cd cache/git && git clone --depth 1 "https://github.com/pullreqr/pullreqr_ssh_info.git" && popd;
 fi
 
 pushd . && cd cache/git/git && git pull --depth 1 --all && popd
-pushd . && cd cache/git/pull_req_githook && git pull --all && popd
+pushd . && cd cache/git/pullreqr_githook && git pull --all && popd
 
 cat <<-'EOF' | envsubst '${script_path} ${run_path}' >${run_path}/build/gen_code/git.sh
 	#!/bin/bash -x
@@ -44,7 +48,8 @@ cat <<-'EOF' | envsubst '${script_path} ${run_path}' >${run_path}/build/gen_code
 	rustup="${run_path}/cache/rustup/:/root/.rustup:Z"
 	cargo_target="${run_path}/cache/cargo_target:/root/cargo_target:Z"
 	GIT_GIT="${run_path}/cache/git/git"
-	GIT_HOOKS="${run_path}/cache/git/pull_req_githook/"
+	HOOKS_GIT="${run_path}/cache/git/pullreqr_githook/"
+	SSH_INFO_GIT="${run_path}/cache/git/pullreqr_ssh_info/"
 	
 	make_build_env_container() {
 		dnf_cache="${run_path}/cache/dnf:/var/cache/dnf:Z"
@@ -103,15 +108,23 @@ cat <<-'EOF' | envsubst '${script_path} ${run_path}' >${run_path}/build/gen_code
 			# Cargo
 			buildah run -v ${rustup} -v ${cargo} ${build_container} sh -l -c 'if [ -x "$(command -v rustup)" ]; then rustup self update; rustup update; else curl --proto "=https" --tlsv1.2 -sSf https://sh.rustup.rs | sh -s -- "-y" "--profile" "minimal" "--no-modify-path"; fi'
 			
-			if [ ! -d ${build_mountpoint}/pull_req_githook ]; then
-				git clone --depth 1 ${GIT_HOOKS}
+			if [ ! -d ${build_mountpoint}/pullreqr_githook ]; then
+				git clone --depth 1 ${HOOKS_GIT}
 			else
 				pushd .
-				cd ${build_mountpoint}/pull_req_githook
+				cd ${build_mountpoint}/pullreqr_githook
 				git pull
 			fi
-			buildah run -v "${artifacts}" -v "${rustup}" -v "${cargo}" ${build_container} sh -l -c 'cargo install --path /pull_req_githook --root /tmp/destdir/usr/'
+			buildah run -v "${artifacts}" -v "${rustup}" -v "${cargo}" ${build_container} sh -l -c 'cargo install --path /pullreqr_githook --root /tmp/destdir/usr/'
 
+			if [ ! -d ${build_mountpoint}/pullreqr_ssh_info ]; then
+				git clone --depth 1 ${SSH_INFO_GIT}
+			else
+				pushd .
+				cd ${build_mountpoint}/pullreqr_ssh_info
+				git pull
+			fi
+			buildah run -v "${artifacts}" -v "${rustup}" -v "${cargo}" ${build_container} sh -l -c 'cargo install --path /pullreqr_ssh_info --root /tmp/destdir/usr/'
 
 			# Build tar file from destdir 
 			buildah config --workingdir /tmp/destdir ${build_container}
@@ -251,7 +264,7 @@ cat <<-'EOF2' | podman unshare
 	chown 0:0 ${run_path}/persistent/vol/etc-ssh/ -R
 	chmod 700 ${run_path}/persistent/vol/etc-ssh/
 	chmod 600 ${run_path}/persistent/vol/etc-ssh/*
-	podman run --rm --name pullreqer -v "${run_path}/persistent/vol/home:/home:Z" \
+	podman run --rm --name pullreqr -v "${run_path}/persistent/vol/home:/home:Z" \
 		   -v "${run_path}/persistent/vol/etc-ssh:/etc/ssh:Z" \
 			-p 2222:22 -t --systemd=always localhost/git-run
 EOF2
@@ -261,11 +274,11 @@ cat <<-'EOF' | envsubst '${git_uid} ${git_gid} ${run_path}' >build/gen_code/git_
 cat <<-'EOF2' | podman unshare
 	set -o errexit errtrace
 	chown 0:0 ${run_path}/persistent/vol/ -R
-	podman stop pullreqer
+	podman stop pullreqr
 EOF2
 EOF
 
-cat <<'EOF' | envsubst '${PWD}' >build/gen_code/pullreqer.service
+cat <<'EOF' | envsubst '${PWD}' >build/gen_code/pullreqr.service
 [Unit]
 Description=Pull Reqer git server container
 [Service]

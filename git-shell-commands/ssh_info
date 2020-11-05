@@ -1,2 +1,2 @@
 #!/bin/sh
-echo "{\"user\": \"${USER}\", \"host\": \"localhost\", \"port\": 2222, \"type\": \"agit\", \"version\": 1, \"expire\": 0}"
+pullreqr_ssh_info

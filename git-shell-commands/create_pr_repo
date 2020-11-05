@@ -25,7 +25,7 @@ if [ ! -d "$project" ]; then
 	git config --add receive.procReceiveRefs refs/private/ && \
 	git config receive.advertisePushOptions true && \
 	cd "hooks" && \
-	ln -s /usr/bin/pull_req proc-receive;
+	ln -s /usr/bin/pullreqr proc-receive;
 else
 	echo "$project already exists";
 fi

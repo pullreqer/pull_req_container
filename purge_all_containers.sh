@@ -1,6 +1,6 @@
 #!/bin/sh
 set -o errexit
-echo "this will purge all containers, even those unassociated with this project. "
+echo "this will purge all containers, even those unassociated with this project. this is a terrible idea "
 read -p "purge all containers? " -n 1 -r
 echo    
 if [[ $REPLY =~ ^[Yy]$ ]]
