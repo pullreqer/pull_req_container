@@ -280,7 +280,7 @@ EOF
 
 cat <<'EOF' | envsubst '${PWD}' >build/gen_code/pullreqr.service
 [Unit]
-Description=Pull Reqer git server container
+Description=Pull Reqr git server container
 [Service]
 Restart=always
 ExecStart=${PWD}/build/gen_code/git_start.sh
