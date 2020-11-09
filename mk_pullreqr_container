@@ -4,7 +4,7 @@ set -o errexit errtrace
 #FROM="fedora-minimal:32"
 #DNF=microdnf
 
-FROM="fedora:32"
+FROM="fedora:33"
 DNF=dnf
 podman pull registry.fedoraproject.org/${FROM}
 build_packages="make openssl-devel \
