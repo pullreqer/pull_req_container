@@ -17,5 +17,5 @@ then
 	done
 
 	podman images prune
-	rm -f persistent/env/*.env
+	rm -f $(pwd)/persistent/env/*.env
 fi
