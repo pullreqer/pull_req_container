@@ -172,7 +172,7 @@ cat <<-'EOF' | envsubst '${script_path} ${run_path}' >${run_path}/build/build_sc
 		   ${GIT_USER}
 		cp -a ${script_path}/git-shell-commands ${run_path}/persistent/vol/home/${GIT_USER}
 		# This is primarily debugging junk for the proc-receive hook, should probably get rid of it.
-		mkdir -p git-shell-commands ${run_path}/persistent/vol/home/${GIT_USER}/logs
+		mkdir -p ${run_path}/persistent/vol/home/${GIT_USER}/logs
 		buildah run ${run_container} sh -c 'echo "if [ -d "$HOME/git-shell-commands" ]; then export PATH=\"$HOME/git-shell-commands:$PATH\"; fi" >> /etc/bashrc'
 		username="${GIT_USER}" uid=$(buildah run $run_container id -u ${GIT_USER}) gid=$(buildah run $run_container id -g $GIT_USER) envsubst <${script_path}/user.template >${run_path}/persistent/env/git_user.env
 		. ${run_path}/persistent/env/git_user.env
