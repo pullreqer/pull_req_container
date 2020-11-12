@@ -20,7 +20,7 @@ mkdir -p ${run_path}/persistent/{vol,env,keys}
 mkdir -p ${run_path}/persistent/vol/{home,var-git}
 mkdir -p ${run_path}/persistent/vol/etc-ssh
 mkdir -p ${run_path}/cache/{cargo,rustup,dnf,git}
-mkdir -p ${run_path}/build/{artifacts,gen_code,logs}
+mkdir -p ${run_path}/build/{artifacts,host_scripts,build_scripts,target_scripts,logs}
 
 if [ ! -d cache/git/git ]; then
   pushd . && cd cache/git && git clone --depth 1 "https://github.com/git/git.git" && popd;
@@ -37,7 +37,7 @@ fi
 pushd . && cd cache/git/git && git pull --depth 1 --all && popd
 pushd . && cd cache/git/pullreqr_githook && git pull --all && popd
 
-cat <<-'EOF' | envsubst '${script_path} ${run_path}' >${run_path}/build/gen_code/git.sh
+cat <<-'EOF' | envsubst '${script_path} ${run_path}' >${run_path}/build/build_scripts/git.sh
 	#!/bin/bash -x
 	set -o errexit errtrace
 
@@ -190,14 +190,14 @@ cat <<-'EOF' | envsubst '${script_path} ${run_path}' >${run_path}/build/gen_code
 		fi
 		cp ${run_path}/persistent/keys/user_key.pub ${run_path}/persistent/vol/home/$GIT_USER/.ssh/authorized_keys
 		
-cat <<-EOF2 >build/gen_code/git-permissions.sh
+cat <<-EOF2 >build/target_scripts/git-permissions.sh
 		#!/bin/bash -x
 		chown $GIT_USER:$GIT_USER /home/$GIT_USER -R
 		chmod 755 /home/$GIT_USER/.ssh
 		chmod 655 /home/$GIT_USER/.ssh/authorized_keys
 EOF2
 
-cat <<-EOF2 >build/gen_code/git-permissions.service
+cat <<-EOF2 >build/target_scripts/git-permissions.service
 		[Unit]
 		Before=console-login-helper-messages-issuegen.service
 		After=home.mount
@@ -213,9 +213,9 @@ cat <<-EOF2 >build/gen_code/git-permissions.service
 		WantedBy=sshd.service
 EOF2
 
-		cp ${run_path}/build/gen_code/git-permissions.sh ${run_mountpoint}/usr/local/bin
+		cp ${run_path}/build/target_scripts/git-permissions.sh ${run_mountpoint}/usr/local/bin
 		chmod +x ${run_mountpoint}/usr/local/bin/git-permissions.sh
-		cp ${run_path}/build/gen_code/git-permissions.service ${run_mountpoint}/etc/systemd/system
+		cp ${run_path}/build/target_scripts/git-permissions.service ${run_mountpoint}/etc/systemd/system
 		buildah run $run_container systemctl enable git-permissions.service
 	}
 
@@ -248,12 +248,12 @@ EOF2
 	setup
 EOF
 
-chmod +x build/gen_code/git.sh
-buildah unshare build/gen_code/git.sh
+chmod +x build/build_scripts/git.sh
+buildah unshare build/build_scripts/git.sh
 # It's important that this is run_path (not some other directory).
 # we're running under buildah unshare
 . persistent/env/git_user.env
-cat <<-'EOF' | envsubst '${git_uid} ${git_gid} ${GIT_USER} ${run_path}' >build/gen_code/git_start.sh
+cat <<-'EOF' | envsubst '${git_uid} ${git_gid} ${GIT_USER} ${run_path}' >build/host_scripts/git_start.sh
 #!/bin/bash -x
 cat <<-'EOF2' | podman unshare
 	set -o errexit errtrace
@@ -269,7 +269,7 @@ cat <<-'EOF2' | podman unshare
 			-p 2222:22 -t --systemd=always localhost/git-run
 EOF2
 EOF
-cat <<-'EOF' | envsubst '${git_uid} ${git_gid} ${run_path}' >build/gen_code/git_stop.sh
+cat <<-'EOF' | envsubst '${git_uid} ${git_gid} ${run_path}' >build/host_scripts/git_stop.sh
 #!/bin/bash -x
 cat <<-'EOF2' | podman unshare
 	set -o errexit errtrace
@@ -278,16 +278,16 @@ cat <<-'EOF2' | podman unshare
 EOF2
 EOF
 
-cat <<'EOF' | envsubst '${PWD}' >build/gen_code/pullreqr.service
+cat <<'EOF' | envsubst '${PWD}' >build/host_scripts/pullreqr.service
 [Unit]
 Description=Pull Reqr git server container
 [Service]
 Restart=always
-ExecStart=${PWD}/build/gen_code/git_start.sh
-ExecStop=${PWD}/build/gen_code/git_stop.sh
+ExecStart=${PWD}/build/host_scripts/git_start.sh
+ExecStop=${PWD}/build/host_scripts/git_stop.sh
 
 [Install]
 WantedBy=multi-user.target
 EOF
 
-chmod +x build/gen_code/git_{start,stop}.sh
+chmod +x build/host_scripts/git_{start,stop}.sh

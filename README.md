@@ -15,11 +15,11 @@ The containers a built and run rootless, and there is an excessive amount of cac
 you will also need https://git-repo.info
 
 ### Usage:
-Build container with`./mk_pullreqr_container`, run it using `build/gen_code/git_start.sh`
-A systemd unit is in `build/gen_code/pullreqr.service` you can enable it with
+Build container with`./mk_pullreqr_container`, run it using `build/host_scripts/git_start.sh`
+A systemd unit is in `build/host_scripts/pullreqr.service` you can enable it with
 ```
 mkdir -p ~/.config/systemd/user
-cp build/gen_code/pullreqr.service ~/.config/systemd/user
+cp build/host_scripts/pullreqr.service ~/.config/systemd/user
 systemctl --user enable pullreqr.service --now
 ```
 
